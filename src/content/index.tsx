@@ -49,6 +49,12 @@ function createDialogContainer(): ShadowRoot {
   host.style.pointerEvents = 'none'
   document.body.appendChild(host)
 
+  // 在 shadow host 上拦截键盘事件，防止冒泡到宿主页面的 capture 监听器
+  const stopKeyboard = (e: Event) => { e.stopPropagation() }
+  host.addEventListener('keydown', stopKeyboard, true)
+  host.addEventListener('keyup', stopKeyboard, true)
+  host.addEventListener('keypress', stopKeyboard, true)
+
   const shadow = host.attachShadow({ mode: 'open' })
 
   // 注入样式到 Shadow DOM
@@ -98,6 +104,13 @@ function createDialogContainer(): ShadowRoot {
   const container = document.createElement('div')
   container.id = 'root'
   container.style.pointerEvents = 'auto'
+
+  // 阻止键盘事件冒泡到宿主页面（防止触发 Vimium、GitHub 等网站快捷键）
+  const blockKeys = (e: Event) => { e.stopPropagation() }
+  container.addEventListener('keydown', blockKeys, true)
+  container.addEventListener('keyup', blockKeys, true)
+  container.addEventListener('keypress', blockKeys, true)
+
   shadow.appendChild(container)
 
   shadowRoot = shadow
