@@ -1,13 +1,14 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import CollectDialog from './CollectDialog'
-import { getHotkeyConfig } from '../shared/storage'
+import { getHotkeyConfig, getConfig } from '../shared/storage'
 import type { HotkeyConfig } from '../shared/hotkey'
 import { matchesHotkey, isInputFocused } from '../shared/hotkey'
 
 // Shadow DOM 容器
 let shadowRoot: ShadowRoot | null = null
 let dialogContainer: HTMLElement | null = null
+let reactRoot: ReactDOM.Root | null = null
 
 // 快捷键配置缓存
 let hotkeyConfig: HotkeyConfig | null = null
@@ -141,16 +142,44 @@ window.addEventListener('message', (event) => {
 function showCollectDialog(url: string, title: string) {
   if (!dialogContainer) return
 
-  const root = ReactDOM.createRoot(dialogContainer)
-  root.render(
-    <React.StrictMode>
-      <CollectDialog
-        url={url}
-        initialTitle={title}
-        onClose={() => {
-          root.unmount()
-        }}
-      />
-    </React.StrictMode>
-  )
+  // 预加载创建人名称，确保弹窗打开时立即填充
+  getConfig().then(config => {
+    const creatorName = config?.creatorName || ''
+
+    if (!reactRoot) {
+      reactRoot = ReactDOM.createRoot(dialogContainer!)
+    }
+
+    reactRoot.render(
+      <React.StrictMode>
+        <CollectDialog
+          url={url}
+          initialTitle={title}
+          initialCreator={creatorName}
+          onClose={() => {
+            reactRoot?.unmount()
+            reactRoot = null
+          }}
+        />
+      </React.StrictMode>
+    )
+  }).catch(() => {
+    // 即使获取配置失败也打开弹窗，创建人为空
+    if (!reactRoot) {
+      reactRoot = ReactDOM.createRoot(dialogContainer!)
+    }
+
+    reactRoot.render(
+      <React.StrictMode>
+        <CollectDialog
+          url={url}
+          initialTitle={title}
+          onClose={() => {
+            reactRoot?.unmount()
+            reactRoot = null
+          }}
+        />
+      </React.StrictMode>
+    )
+  })
 }

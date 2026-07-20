@@ -5,6 +5,7 @@ import { getConfig } from '../shared/storage'
 interface Props {
   url: string
   initialTitle: string
+  initialCreator?: string
   onClose: () => void
 }
 
@@ -26,7 +27,7 @@ function getColor(idx: number) {
   return TAG_COLORS[idx % TAG_COLORS.length]
 }
 
-export default function CollectDialog({ url, initialTitle, onClose }: Props) {
+export default function CollectDialog({ url, initialTitle, initialCreator = '', onClose }: Props) {
   const [formData, setFormData] = useState<CollectFormData>({
     title: initialTitle || document.title,
     description: getMetaDescription(),
@@ -34,7 +35,7 @@ export default function CollectDialog({ url, initialTitle, onClose }: Props) {
     category: '',
     tags: [],
     note: '',
-    creator: '',
+    creator: initialCreator,
   })
 
   const [categoryOptions, setCategoryOptions] = useState<FieldOption[]>([])
@@ -69,9 +70,11 @@ export default function CollectDialog({ url, initialTitle, onClose }: Props) {
 
   async function loadCreator() {
     try {
+      // 如果已通过 prop 传入初始值，则跳过异步加载
+      if (initialCreator) return
       const config = await getConfig()
       if (config?.creatorName) {
-        setFormData(p => ({ ...p, creator: config.creatorName }))
+        setFormData(p => ({ ...p, creator: p.creator || config.creatorName }))
       }
     } catch (e) {
       console.error('[Collect to Lark] loadCreator error:', e)
