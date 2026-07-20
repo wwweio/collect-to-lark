@@ -114,7 +114,6 @@ function buildRecordFields(formData: CollectFormData): Record<string, unknown> {
     '网页说明': formData.description,
     '网页地址': { link: formData.url, text: formData.title },
     '收集时间': now,
-    '创建时间': now,
   }
 
   // 创建人 (文本字段)
