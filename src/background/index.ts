@@ -5,8 +5,30 @@ import { CollectFormData, FieldMeta, FieldOption } from '../shared/types'
 // 右键菜单 ID
 const MENU_ID = 'collect-to-lark'
 
+// 性能日志开关：排查保存耗时时置为 true，只输出耗时与缓存命中情况，不包含配置或凭证
+const PERF_LOG = false
+
 // 字段快照超过该时长，才在追加选项前重新校对（打开弹窗时刚刷新过的快照可直接用）
 const FIELDS_RECHECK_MS = 60 * 1000
+
+/** 分段耗时打点 */
+function createPerfTracker(label: string) {
+  const start = Date.now()
+  let mark = start
+  if (PERF_LOG) console.log(`[PERF] ===== ${label} | SW 启动至今 ${Math.round(performance.now())}ms =====`)
+  return {
+    lap(step: string, extra = '') {
+      if (!PERF_LOG) return
+      const now = Date.now()
+      console.log(`[PERF] ${step}: ${now - mark}ms${extra ? ' | ' + extra : ''}`)
+      mark = now
+    },
+    end() {
+      if (!PERF_LOG) return
+      console.log(`[PERF] ===== ${label}总耗时 ${Date.now() - start}ms =====`)
+    },
+  }
+}
 
 // 注册右键菜单
 chrome.runtime.onInstalled.addListener(() => {
@@ -126,16 +148,22 @@ async function handleApiCall(method: string, params: unknown[]): Promise<unknown
       return fields
     }
     case 'createRecord': {
+      const perf = createPerfTracker('保存收藏')
       const config = await getConfig()
       if (!config) throw new Error('请先配置飞书应用信息')
       const token = await getTenantToken(config.appId, config.appSecret)
       const formData = params[0] as CollectFormData
+      perf.lap('1.配置+token')
 
       // 与预建任务共用串行队列：若用户刚点过「创建选项」，这里会等它完成后再校验，避免选项未建好就提交
       await enqueueOptionTask(() => ensureFieldOptions(token, config.appToken, config.tableId, formData))
+      perf.lap('2.确保分类/标签选项已存在')
 
       const fields = buildRecordFields(formData)
-      return createRecord(token, config.appToken, config.tableId, fields)
+      const recordId = await createRecord(token, config.appToken, config.tableId, fields)
+      perf.lap('3.创建记录(POST)')
+      perf.end()
+      return recordId
     }
     default:
       throw new Error(`未知方法: ${method}`)
