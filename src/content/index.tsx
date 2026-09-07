@@ -127,7 +127,45 @@ chrome.runtime.onMessage.addListener((message) => {
     }
     showCollectDialog(message.url, message.title)
   }
+  // 后台保存完成的结果回报（弹窗此时已关闭）
+  if (message.type === 'COLLECT_RESULT') {
+    showResultToast(message.ok, message.error)
+  }
 })
+
+/** 右上角轻提示，用于回报后台保存结果 */
+function showResultToast(ok: boolean, error?: string) {
+  const shadow = shadowRoot || createDialogContainer()
+
+  const toast = document.createElement('div')
+  toast.style.cssText = `
+    position: fixed; top: 20px; right: 20px; z-index: 2147483647;
+    max-width: 320px; padding: 12px 16px; border-radius: 10px;
+    background: #FFFFFF; border-left: 4px solid ${ok ? '#16A34A' : '#DC2626'};
+    box-shadow: 0 8px 30px rgba(0,0,0,0.15); pointer-events: auto;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px; color: #1A1A1A; line-height: 1.5;
+    animation: slideUp 0.2s ease;
+  `
+
+  const title = document.createElement('div')
+  title.style.cssText = 'font-weight: 600; margin-bottom: 2px;'
+  title.textContent = ok ? '已保存到飞书' : '保存失败'
+  toast.appendChild(title)
+
+  if (!ok) {
+    const detail = document.createElement('div')
+    detail.style.cssText = 'font-size: 12px; color: #78716C;'
+    const msg = error || '未知错误'
+    detail.textContent = /Forbidden|permission/i.test(msg)
+      ? '权限不足：打开飞书多维表格 → 右上角「分享」→ 添加应用为协作者 → 「可编辑」'
+      : msg
+    toast.appendChild(detail)
+  }
+
+  shadow.appendChild(toast)
+  setTimeout(() => toast.remove(), ok ? 2500 : 8000)
+}
 
 // 提供给 popup 调用的接口
 window.addEventListener('message', (event) => {

@@ -1,4 +1,4 @@
-import { FeishuConfig, FieldOption } from './types'
+import { FeishuConfig, FieldOption, FieldMeta } from './types'
 import { HotkeyConfig, DEFAULT_HOTKEY } from './hotkey'
 
 export type { HotkeyConfig } from './hotkey'
@@ -72,23 +72,39 @@ export async function setTagCache(options: FieldOption[]): Promise<void> {
 }
 
 interface FieldsCache {
-  data: import('./types').FieldMeta[]
+  key: string
+  data: FieldMeta[]
+  fetchedAt: number
   expireAt: number
 }
 
-export async function getFieldsCache(): Promise<import('./types').FieldMeta[] | null> {
+/** 字段缓存命中结果，fetchedAt 用于判断快照新鲜度 */
+export interface FieldsCacheEntry {
+  fields: FieldMeta[]
+  fetchedAt: number
+}
+
+/** 缓存 key 绑定表格，切换表格后旧缓存自动失效 */
+function fieldsCacheKey(appToken: string, tableId: string): string {
+  return `${appToken}:${tableId}`
+}
+
+export async function getFieldsCache(appToken: string, tableId: string): Promise<FieldsCacheEntry | null> {
   const result = await chrome.storage.local.get(STORAGE_KEYS.FIELDS_CACHE)
   const cache = result[STORAGE_KEYS.FIELDS_CACHE] as FieldsCache | undefined
-  // 缓存 10 分钟
-  if (cache && cache.expireAt > Date.now()) return cache.data
+  if (!cache || cache.key !== fieldsCacheKey(appToken, tableId)) return null
+  if (cache.expireAt > Date.now()) return { fields: cache.data, fetchedAt: cache.fetchedAt ?? 0 }
   return null
 }
 
-export async function setFieldsCache(fields: import('./types').FieldMeta[]): Promise<void> {
+export async function setFieldsCache(appToken: string, tableId: string, fields: FieldMeta[]): Promise<void> {
+  const now = Date.now()
   await chrome.storage.local.set({
     [STORAGE_KEYS.FIELDS_CACHE]: {
+      key: fieldsCacheKey(appToken, tableId),
       data: fields,
-      expireAt: Date.now() + 10 * 60 * 1000,
+      fetchedAt: now,
+      expireAt: now + 30 * 60 * 1000, // 缓存 30 分钟，新增选项后会回写，打开弹窗时会静默刷新
     },
   })
 }

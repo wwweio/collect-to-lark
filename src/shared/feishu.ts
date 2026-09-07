@@ -3,6 +3,7 @@ import {
   FeishuTableListResponse,
   FeishuFieldListResponse,
   FeishuCreateRecordResponse,
+  FeishuUpdateFieldResponse,
   TableInfo,
   FieldMeta,
   FieldOption,
@@ -60,7 +61,7 @@ export function extractOptions(fields: FieldMeta[], fieldName: string): FieldOpt
   return field?.property?.options || []
 }
 
-/** 更新字段选项（追加新选项） */
+/** 更新字段选项（追加新选项），返回更新后的完整选项列表 */
 export async function appendFieldOptions(
   token: string,
   appToken: string,
@@ -70,8 +71,8 @@ export async function appendFieldOptions(
   fieldType: number,
   existingOptions: FieldOption[],
   newNames: string[]
-): Promise<void> {
-  if (newNames.length === 0) return
+): Promise<FieldOption[]> {
+  if (newNames.length === 0) return existingOptions
   const allOptions = [
     ...existingOptions.map(o => ({ name: o.name, id: o.id })),
     ...newNames.map(name => ({ name })),
@@ -88,8 +89,11 @@ export async function appendFieldOptions(
       property: { options: allOptions },
     }),
   })
-  const data = await res.json()
+  const data: FeishuUpdateFieldResponse = await res.json()
   if (data.code !== 0) throw new Error(`更新字段选项失败: ${data.msg}`)
+
+  // 优先采用响应里带 id 的最新选项，便于回写缓存后下次直接命中
+  return data.data?.field?.property?.options || allOptions
 }
 
 /** 创建一条多维表格记录 */

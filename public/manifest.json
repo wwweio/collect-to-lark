@@ -31,5 +31,8 @@
     "contextMenus",
     "storage",
     "activeTab"
+  ],
+  "host_permissions": [
+    "https://open.feishu.cn/*"
   ]
 }

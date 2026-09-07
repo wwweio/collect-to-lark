@@ -72,3 +72,11 @@ export interface FeishuCreateRecordResponse {
     }
   }
 }
+
+export interface FeishuUpdateFieldResponse {
+  code: number
+  msg: string
+  data?: {
+    field?: FieldMeta
+  }
+}

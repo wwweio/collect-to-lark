@@ -1,9 +1,12 @@
 import { getConfig, getFieldsCache, setFieldsCache } from '../shared/storage'
 import { getTenantToken, listTables, getFieldMeta, createRecord, testConnection, appendFieldOptions } from '../shared/feishu'
-import { CollectFormData } from '../shared/types'
+import { CollectFormData, FieldMeta, FieldOption } from '../shared/types'
 
 // 右键菜单 ID
 const MENU_ID = 'collect-to-lark'
+
+// 字段快照超过该时长，才在追加选项前重新校对（打开弹窗时刚刷新过的快照可直接用）
+const FIELDS_RECHECK_MS = 60 * 1000
 
 // 注册右键菜单
 chrome.runtime.onInstalled.addListener(() => {
@@ -30,7 +33,7 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
 })
 
 // 处理来自 content script 的消息
-chrome.runtime.onMessage.addListener((message: { type: string; payload?: unknown }, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: { type: string; payload?: unknown }, sender, sendResponse) => {
   if (message.type === 'FEISHU_API_CALL') {
     const { method, params } = message.payload as { method: string; params: unknown[] }
 
@@ -41,7 +44,56 @@ chrome.runtime.onMessage.addListener((message: { type: string; payload?: unknown
 
     return true // 表示会异步响应
   }
+
+  // 后台保存：飞书写接口单次耗时数秒，立即确认收单，完成后回报所在标签页
+  if (message.type === 'CREATE_RECORD_ASYNC') {
+    const { formData } = message.payload as { formData: CollectFormData }
+    const tabId = sender.tab?.id
+    chrome.action.setBadgeText({ text: '' })
+
+    handleApiCall('createRecord', [formData])
+      .then(() => notifyResult(tabId, true))
+      .catch((error) => notifyResult(tabId, false, (error as Error).message))
+
+    sendResponse({ accepted: true })
+  }
+
+  // 用户在下拉里现场创建选项：趁着用户继续填表的时间后台预建，保存时就不用再等写请求
+  if (message.type === 'PRECREATE_OPTION') {
+    const { fieldName, name } = message.payload as { fieldName: string; name: string }
+    void precreateOption(fieldName, name)
+    sendResponse({ accepted: true })
+  }
 })
+
+/** 预建单个字段选项，失败不打扰用户（保存时会兜底再追加一次） */
+async function precreateOption(fieldName: string, name: string): Promise<void> {
+  try {
+    const config = await getConfig()
+    if (!config?.appToken || !config?.tableId) return
+    const token = await getTenantToken(config.appId, config.appSecret)
+    const values: OptionValues = {
+      category: fieldName === '分类' ? name : '',
+      tags: fieldName === '标签' ? [name] : [],
+    }
+    await enqueueOptionTask(() => ensureFieldOptions(token, config.appToken, config.tableId, values))
+  } catch (e) {
+    console.error('[Collect to Lark] 预建选项失败:', (e as Error).message)
+  }
+}
+
+/** 把保存结果回报给发起的标签页，并用角标兜底（标签页可能已关闭或跳转） */
+function notifyResult(tabId: number | undefined, ok: boolean, error?: string): void {
+  chrome.action.setBadgeText({ text: ok ? '✓' : '!' })
+  chrome.action.setBadgeBackgroundColor({ color: ok ? '#16A34A' : '#DC2626' })
+  setTimeout(() => chrome.action.setBadgeText({ text: '' }), ok ? 3000 : 10000)
+
+  if (!ok) console.error('[Collect to Lark] 保存失败:', error)
+  if (tabId === undefined) return
+  chrome.tabs.sendMessage(tabId, { type: 'COLLECT_RESULT', ok, error }).catch(() => {
+    // 标签页已关闭或无 content script，仅靠角标提示
+  })
+}
 
 async function handleApiCall(method: string, params: unknown[]): Promise<unknown> {
   switch (method) {
@@ -58,8 +110,19 @@ async function handleApiCall(method: string, params: unknown[]): Promise<unknown
     case 'getFieldMeta': {
       const config = await getConfig()
       if (!config) throw new Error('请先配置飞书应用信息')
+      const appToken = params[0] as string
+      const tableId = params[1] as string
+
+      // 命中缓存时立即返回（弹窗秒开），同时后台静默刷新保证新鲜度
+      const cached = await getFieldsCache(appToken, tableId)
+      if (cached) {
+        void refreshFieldsCache(config.appId, config.appSecret, appToken, tableId)
+        return cached.fields
+      }
+
       const token = await getTenantToken(config.appId, config.appSecret)
-      const fields = await getFieldMeta(token, params[0] as string, params[1] as string)
+      const fields = await getFieldMeta(token, appToken, tableId)
+      await setFieldsCache(appToken, tableId, fields)
       return fields
     }
     case 'createRecord': {
@@ -68,40 +131,108 @@ async function handleApiCall(method: string, params: unknown[]): Promise<unknown
       const token = await getTenantToken(config.appId, config.appSecret)
       const formData = params[0] as CollectFormData
 
-      // 使用缓存的字段元数据，避免每次保存都请求
-      let allFields = await getFieldsCache()
-      if (!allFields) {
-        allFields = await getFieldMeta(token, config.appToken, config.tableId)
-        await setFieldsCache(allFields)
-      }
-
-      if (formData.category) {
-        const catField = allFields.find(f => f.field_name === '分类')
-        if (catField?.property?.options) {
-          const existing = catField.property.options.map(o => o.name)
-          if (!existing.includes(formData.category)) {
-            await appendFieldOptions(token, config.appToken, config.tableId, catField.field_id, catField.field_name, catField.type, catField.property.options, [formData.category])
-          }
-        }
-      }
-
-      if (formData.tags.length > 0) {
-        const tagField = allFields.find(f => f.field_name === '标签')
-        if (tagField?.property?.options) {
-          const existing = tagField.property.options.map(o => o.name)
-          const newTags = formData.tags.filter(t => !existing.includes(t))
-          if (newTags.length > 0) {
-            await appendFieldOptions(token, config.appToken, config.tableId, tagField.field_id, tagField.field_name, tagField.type, tagField.property.options, newTags)
-          }
-        }
-      }
+      // 与预建任务共用串行队列：若用户刚点过「创建选项」，这里会等它完成后再校验，避免选项未建好就提交
+      await enqueueOptionTask(() => ensureFieldOptions(token, config.appToken, config.tableId, formData))
 
       const fields = buildRecordFields(formData)
-      const recordId = await createRecord(token, config.appToken, config.tableId, fields)
-      return recordId
+      return createRecord(token, config.appToken, config.tableId, fields)
     }
     default:
       throw new Error(`未知方法: ${method}`)
+  }
+}
+
+/** 需要校验选项的表单值 */
+interface OptionValues {
+  category: string
+  tags: string[]
+}
+
+// 选项追加串行执行：避免并发任务对字段缓存“读-改-写”互相覆盖，也让保存能等到预建完成
+let optionChain: Promise<unknown> = Promise.resolve()
+
+function enqueueOptionTask<T>(task: () => Promise<T>): Promise<T> {
+  // 前一个任务失败也要接着执行，因此 onFulfilled / onRejected 传同一个 task
+  const next = optionChain.then(task, task)
+  optionChain = next.catch(() => {})
+  return next
+}
+
+/** 确保「分类」「标签」的值都已是飞书字段的合法选项，缺失则追加 */
+async function ensureFieldOptions(token: string, appToken: string, tableId: string, values: OptionValues): Promise<void> {
+  // 字段元数据优先取缓存，避免多一次请求
+  const cached = await getFieldsCache(appToken, tableId)
+  let allFields = cached?.fields
+  let fieldsFetchedAt = cached?.fetchedAt ?? 0
+  if (!allFields) {
+    allFields = await getFieldMeta(token, appToken, tableId)
+    await setFieldsCache(appToken, tableId, allFields)
+    fieldsFetchedAt = Date.now()
+  }
+
+  let pending = collectPendingOptions(allFields, values)
+  if (pending.length === 0) return
+
+  // 快照不够新时先拉一次最新字段，避免用旧快照覆盖掉别人新增的选项
+  if (Date.now() - fieldsFetchedAt > FIELDS_RECHECK_MS) {
+    allFields = await getFieldMeta(token, appToken, tableId)
+    await setFieldsCache(appToken, tableId, allFields)
+    pending = collectPendingOptions(allFields, values)
+    if (pending.length === 0) return
+  }
+
+  // 「分类」「标签」并行追加，不再串行等两次写请求
+  const updated = await Promise.all(
+    pending.map(async ({ field, newNames }) => ({
+      fieldId: field.field_id,
+      options: await appendFieldOptions(
+        token, appToken, tableId,
+        field.field_id, field.field_name, field.type,
+        field.property?.options || [], newNames
+      ),
+    }))
+  )
+
+  // 回写缓存，避免同一新选项重复触发写请求
+  const merged = allFields.map(f => {
+    const hit = updated.find(u => u.fieldId === f.field_id)
+    return hit ? { ...f, property: { ...f.property, options: hit.options } } : f
+  })
+  await setFieldsCache(appToken, tableId, merged)
+}
+
+/** 待追加的字段选项 */
+interface PendingOptions {
+  field: FieldMeta
+  newNames: string[]
+}
+
+/** 找出「分类」「标签」中飞书尚不存在的选项 */
+function collectPendingOptions(fields: FieldMeta[], values: OptionValues): PendingOptions[] {
+  const pending: PendingOptions[] = []
+
+  const pick = (fieldName: string, names: string[]) => {
+    if (names.length === 0) return
+    const field = fields.find(f => f.field_name === fieldName)
+    if (!field?.property?.options) return
+    const existing = field.property.options.map((o: FieldOption) => o.name)
+    const newNames = names.filter(v => !existing.includes(v))
+    if (newNames.length > 0) pending.push({ field, newNames })
+  }
+
+  pick('分类', values.category ? [values.category] : [])
+  pick('标签', values.tags)
+  return pending
+}
+
+/** 后台静默刷新字段缓存，不阻塞调用方 */
+async function refreshFieldsCache(appId: string, appSecret: string, appToken: string, tableId: string): Promise<void> {
+  try {
+    const token = await getTenantToken(appId, appSecret)
+    const fields = await getFieldMeta(token, appToken, tableId)
+    await setFieldsCache(appToken, tableId, fields)
+  } catch (e) {
+    console.error('[Collect to Lark] 刷新字段缓存失败:', (e as Error).message)
   }
 }
 

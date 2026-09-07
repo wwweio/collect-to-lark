@@ -81,26 +81,33 @@ export default function CollectDialog({ url, initialTitle, initialCreator = '', 
     }
   }
 
+  /** 现场创建的新选项立即通知后台预建，趁用户继续填表的时间完成写请求
+   * 注意：预建后即使取消弹窗，选项也会留在飞书字段里 */
+  function precreateOption(fieldName: string, name: string) {
+    chrome.runtime.sendMessage({
+      type: 'PRECREATE_OPTION',
+      payload: { fieldName, name },
+    }).catch(() => {
+      // 预建失败不影响保存，保存时会兜底追加
+    })
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setStatus('submitting')
     setErrorMsg('')
     try {
+      // 飞书写接口单次要数秒，不在这里等结果：background 收单后后台完成，结果用页面轻提示回报
       const res = await chrome.runtime.sendMessage({
-        type: 'FEISHU_API_CALL',
-        payload: { method: 'createRecord', params: [formData] },
+        type: 'CREATE_RECORD_ASYNC',
+        payload: { formData },
       })
-      if (res?.success) {
+      if (res?.accepted) {
         setStatus('success')
-        setTimeout(onClose, 1200)
+        setTimeout(onClose, 700)
       } else {
         setStatus('error')
-        const err = res?.error || '未知错误'
-        if (err.includes('Forbidden') || err.includes('permission')) {
-          setErrorMsg('权限不足：打开飞书多维表格 → 右上角「分享」→ 添加应用为协作者 → 「可编辑」权限')
-        } else {
-          setErrorMsg(err)
-        }
+        setErrorMsg('提交失败，请重试')
       }
     } catch (e) {
       setStatus('error')
@@ -115,7 +122,8 @@ export default function CollectDialog({ url, initialTitle, initialCreator = '', 
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>
           </svg>
-          <p style={{ marginTop: 12, color: '#1A1A1A', fontSize: 15 }}>收藏成功！</p>
+          <p style={{ marginTop: 12, color: '#1A1A1A', fontSize: 15 }}>已提交</p>
+          <p style={{ marginTop: 6, color: '#78716C', fontSize: 12 }}>正在后台写入飞书，结果会在右上角提示</p>
         </div>
       </div>
     )
@@ -150,6 +158,7 @@ export default function CollectDialog({ url, initialTitle, initialCreator = '', 
             options={categoryOptions}
             value={formData.category}
             onChange={v => setFormData(p => ({ ...p, category: v }))}
+            onCreateOption={name => precreateOption('分类', name)}
           />
 
           {/* 标签 - 多选 */}
@@ -158,6 +167,7 @@ export default function CollectDialog({ url, initialTitle, initialCreator = '', 
             options={tagOptions}
             values={formData.tags}
             onChange={tags => setFormData(p => ({ ...p, tags }))}
+            onCreateOption={name => precreateOption('标签', name)}
           />
 
           <Field label="备注">
@@ -178,16 +188,7 @@ export default function CollectDialog({ url, initialTitle, initialCreator = '', 
           </div>
 
           {status === 'error' && (
-            <div style={S.errorBox}>
-              {errorMsg.includes('权限不足') ? (
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>权限不足</div>
-                  <div style={{ fontSize: 12, lineHeight: 1.5 }}>
-                    打开飞书多维表格 → 右上角「分享」→ 添加应用为协作者 → 选择「可编辑」权限
-                  </div>
-                </div>
-              ) : errorMsg}
-            </div>
+            <div style={S.errorBox}>{errorMsg}</div>
           )}
 
           <div style={S.submitRow}>
@@ -195,7 +196,7 @@ export default function CollectDialog({ url, initialTitle, initialCreator = '', 
             <button type="submit" className="submit-btn" disabled={status === 'submitting' || !formData.title} style={S.submitBtn}>
               {status === 'submitting' ? (
                 <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={S.spinner} /> 保存中...
+                  <span style={S.spinner} /> 提交中...
                 </span>
               ) : '保存收藏'}
             </button>
@@ -207,8 +208,9 @@ export default function CollectDialog({ url, initialTitle, initialCreator = '', 
 }
 
 /* ============ 单选下拉组件 ============ */
-function SingleSelect({ label, options, value, onChange }: {
+function SingleSelect({ label, options, value, onChange, onCreateOption }: {
   label: string; options: FieldOption[]; value: string; onChange: (v: string) => void
+  onCreateOption?: (name: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -229,6 +231,8 @@ function SingleSelect({ label, options, value, onChange }: {
   const selectedIdx = options.findIndex(o => o.name === value)
 
   function select(name: string) {
+    // 飞书里不存在的选项，选中时就交给后台预建
+    if (!options.some(o => o.name === name)) onCreateOption?.(name)
     onChange(name)
     setSearch('')
     setOpen(false)
@@ -303,8 +307,9 @@ function SingleSelect({ label, options, value, onChange }: {
 }
 
 /* ============ 多选下拉组件 ============ */
-function MultiSelect({ label, options, values, onChange }: {
+function MultiSelect({ label, options, values, onChange, onCreateOption }: {
   label: string; options: FieldOption[]; values: string[]; onChange: (v: string[]) => void
+  onCreateOption?: (name: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -325,7 +330,11 @@ function MultiSelect({ label, options, values, onChange }: {
 
   function add(name: string) {
     const t = name.trim()
-    if (t && !values.includes(t)) onChange([...values, t])
+    if (t && !values.includes(t)) {
+      // 飞书里不存在的选项，选中时就交给后台预建
+      if (!options.some(o => o.name === t)) onCreateOption?.(t)
+      onChange([...values, t])
+    }
     setSearch('')
   }
   function remove(name: string) {
