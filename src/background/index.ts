@@ -266,13 +266,14 @@ async function refreshFieldsCache(appId: string, appSecret: string, appToken: st
 
 /** 构建飞书 API 的 fields 参数 */
 function buildRecordFields(formData: CollectFormData): Record<string, unknown> {
-  const now = Date.now() // 毫秒时间戳
+  // 写入弹窗打开时固化的时间戳，与用户当时看到的一致（后台异步写入要数秒）
+  const collectedAt = formData.collectedAt || Date.now()
 
   const fields: Record<string, unknown> = {
     '内容标题': formData.title,
     '网页说明': formData.description,
     '网页地址': { link: formData.url, text: formData.title },
-    '收集时间': now,
+    '收集时间': collectedAt,
   }
 
   // 创建人 (文本字段)

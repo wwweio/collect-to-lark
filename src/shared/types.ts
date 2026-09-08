@@ -18,6 +18,7 @@ export interface CollectFormData {
   tags: string[]        // 标签
   note: string          // 备注
   creator: string       // 创建人
+  collectedAt: number   // 收集时间（弹窗打开时固化，避免与后台异步写入的时刻不一致）
 }
 
 export interface TableInfo {
